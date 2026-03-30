@@ -1,0 +1,112 @@
+#!/bin/bash
+
+# Load configuration from .env
+ENV_FILE="$(dirname "$(realpath "$0")")/.env"
+if [ ! -f "$ENV_FILE" ]; then
+    echo "Error: .env file not found at $ENV_FILE"
+    echo "Copy .env.example to .env and fill in your mount configurations."
+    exit 1
+fi
+source "$ENV_FILE"
+
+# Build MOUNTS array from MOUNT_* variables defined in .env
+declare -A MOUNTS
+for var in $(compgen -v MOUNT_); do
+    MOUNTS["${var#MOUNT_}"]="${!var}"
+done
+
+# Function to display usage
+usage() {
+    echo "Usage: $0 <mount_name> [--keep-tunnel]"
+    echo ""
+    echo "Available mounts:"
+    for name in "${!MOUNTS[@]}"; do
+        IFS='|' read -r ip share mount_point domain user port cf_tunnel <<< "${MOUNTS[$name]}"
+        if [ -n "$cf_tunnel" ]; then
+            echo "  $name -> $mount_point (via Cloudflare Tunnel)"
+        else
+            echo "  $name -> $mount_point"
+        fi
+    done
+    echo ""
+    echo "Options:"
+    echo "  --keep-tunnel    Don't stop cloudflared tunnel after unmounting"
+    exit 1
+}
+
+# Check if mount name provided
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+MOUNT_NAME=$1
+KEEP_TUNNEL=0
+
+# Check for --keep-tunnel flag
+if [ "$2" = "--keep-tunnel" ]; then
+    KEEP_TUNNEL=1
+fi
+
+# Check if mount configuration exists
+if [ -z "${MOUNTS[$MOUNT_NAME]}" ]; then
+    echo "Error: Mount configuration '$MOUNT_NAME' not found"
+    usage
+fi
+
+# Parse mount configuration
+IFS='|' read -r SERVER_IP SHARE MOUNT_POINT DOMAIN USERNAME PORT CF_TUNNEL <<< "${MOUNTS[$MOUNT_NAME]}"
+
+# Check if mounted
+if ! mountpoint -q "$MOUNT_POINT"; then
+    echo "$MOUNT_POINT is not mounted"
+
+    # Still offer to stop tunnel if it was a tunnel mount
+    if [ -n "$CF_TUNNEL" ] && [ "$KEEP_TUNNEL" -eq 0 ]; then
+        if pgrep -f "cloudflared access tcp.*${CF_TUNNEL}.*localhost:${PORT}" > /dev/null; then
+            echo "Cloudflare tunnel is still running. Stop it? (y/n)"
+            read -r response
+            if [ "$response" = "y" ]; then
+                pkill -f "cloudflared access tcp.*${CF_TUNNEL}.*localhost:${PORT}"
+                echo "Cloudflare tunnel stopped"
+            fi
+        fi
+    fi
+    exit 0
+fi
+
+echo "Unmounting: $MOUNT_POINT"
+umount -l "$MOUNT_POINT"
+
+# Verify unmount
+if ! mountpoint -q "$MOUNT_POINT"; then
+    echo "Successfully unmounted $MOUNT_POINT"
+
+    # Stop cloudflared tunnel if this was a tunnel mount
+    if [ -n "$CF_TUNNEL" ] && [ "$KEEP_TUNNEL" -eq 0 ]; then
+        # Check if any other mounts are using this tunnel
+        OTHER_MOUNTS_USING_TUNNEL=0
+        for name in "${!MOUNTS[@]}"; do
+            if [ "$name" != "$MOUNT_NAME" ]; then
+                IFS='|' read -r _ _ other_mount_point _ _ _ other_cf_tunnel <<< "${MOUNTS[$name]}"
+                if [ "$other_cf_tunnel" = "$CF_TUNNEL" ] && mountpoint -q "$other_mount_point" 2>/dev/null; then
+                    OTHER_MOUNTS_USING_TUNNEL=1
+                    break
+                fi
+            fi
+        done
+
+        if [ $OTHER_MOUNTS_USING_TUNNEL -eq 0 ]; then
+            if pgrep -f "cloudflared access tcp.*${CF_TUNNEL}.*localhost:${PORT}" > /dev/null; then
+                echo "Stopping Cloudflare tunnel..."
+                pkill -f "cloudflared access tcp.*${CF_TUNNEL}.*localhost:${PORT}"
+                echo "Cloudflare tunnel stopped"
+            fi
+        else
+            echo "Keeping Cloudflare tunnel (other mounts are using it)"
+        fi
+    fi
+else
+    echo "Error: Failed to unmount $MOUNT_POINT"
+    echo "Try: sudo umount -l $MOUNT_POINT  (lazy unmount)"
+    exit 1
+fi

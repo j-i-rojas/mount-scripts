@@ -1,0 +1,140 @@
+#!/bin/bash
+
+# Load configuration from .env
+ENV_FILE="$(dirname "$(realpath "$0")")/.env"
+if [ ! -f "$ENV_FILE" ]; then
+    echo "Error: .env file not found at $ENV_FILE"
+    echo "Copy .env.example to .env and fill in your mount configurations."
+    exit 1
+fi
+source "$ENV_FILE"
+
+# Build MOUNTS array from MOUNT_* variables defined in .env
+declare -A MOUNTS
+for var in $(compgen -v MOUNT_); do
+    MOUNTS["${var#MOUNT_}"]="${!var}"
+done
+
+# Get real user ID (works even if run with sudo)
+if [ -n "$SUDO_UID" ]; then
+    REAL_UID=$SUDO_UID
+    REAL_GID=$SUDO_GID
+else
+    REAL_UID=$(id -u)
+    REAL_GID=$(id -g)
+fi
+
+# Function to display usage
+usage() {
+    echo "Usage: $0 <mount_name>"
+    echo ""
+    echo "Available mounts:"
+    for name in "${!MOUNTS[@]}"; do
+        IFS='|' read -r ip share mount_point domain user port cf_tunnel <<< "${MOUNTS[$name]}"
+        if [ -n "$cf_tunnel" ]; then
+            echo "  $name -> //$ip/$share at $mount_point (via Cloudflare Tunnel)"
+        else
+            echo "  $name -> //$ip/$share at $mount_point"
+        fi
+    done
+    exit 1
+}
+
+# Check if mount name provided
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+MOUNT_NAME=$1
+
+# Check if mount configuration exists
+if [ -z "${MOUNTS[$MOUNT_NAME]}" ]; then
+    echo "Error: Mount configuration '$MOUNT_NAME' not found"
+    usage
+fi
+
+# Parse mount configuration
+IFS='|' read -r SERVER_IP SHARE MOUNT_POINT DOMAIN USERNAME PORT CF_TUNNEL <<< "${MOUNTS[$MOUNT_NAME]}"
+
+echo "Mounting: //$SERVER_IP/$SHARE -> $MOUNT_POINT"
+
+# Create mount point if it doesn't exist
+if [ ! -d "$MOUNT_POINT" ]; then
+    echo "Creating mount point: $MOUNT_POINT"
+    mkdir -p "$MOUNT_POINT"
+fi
+
+# Check if already mounted
+if mountpoint -q "$MOUNT_POINT"; then
+    echo "Already mounted at $MOUNT_POINT"
+    exit 0
+fi
+
+# Handle Cloudflare tunnel
+if [ -n "$CF_TUNNEL" ]; then
+    echo "Using Cloudflare Tunnel: $CF_TUNNEL"
+
+    # Check if cloudflared is installed
+    if ! command -v cloudflared &> /dev/null; then
+        echo "Error: cloudflared is not installed"
+        echo "Install with: wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && sudo dpkg -i cloudflared-linux-amd64.deb"
+        exit 1
+    fi
+
+    # Check if tunnel is already running for this hostname
+    if ! pgrep -f "cloudflared access tcp.*${CF_TUNNEL}.*localhost:${PORT}" > /dev/null; then
+	# Test auth
+     	if ! timeout 3 cloudflared access tcp --hostname "$CF_TUNNEL" --url "localhost:$PORT" > /dev/null 2>&1; then
+            echo "Authentication required. Run this and complete auth in browser:"
+            echo "  cloudflared access tcp --hostname $CF_TUNNEL"
+            read -p "Press ENTER after authenticating... "
+     	fi
+        echo "Starting Cloudflare tunnel..."
+        cloudflared access tcp --hostname "$CF_TUNNEL" --url "localhost:${PORT}" > /dev/null 2>&1 &
+        sleep 2
+        echo "Tunnel started on localhost:${PORT}"
+    else
+        echo "Tunnel already running"
+    fi
+else
+    # Check if server is reachable (skip for localhost)
+    if [ "$SERVER_IP" != "127.0.0.1" ] && [ "$SERVER_IP" != "localhost" ]; then
+        if ! ping -c 1 -W 2 "$SERVER_IP" &> /dev/null; then
+            echo "Error: Server $SERVER_IP is not reachable"
+            exit 1
+        fi
+    fi
+fi
+
+# Build mount options
+MOUNT_OPTS="credentials=$CREDS_FILE,domain=$DOMAIN,vers=1.0,uid=$REAL_UID,gid=$REAL_GID"
+
+# Add port if specified
+if [ -n "$PORT" ]; then
+    MOUNT_OPTS="$MOUNT_OPTS,port=$PORT"
+fi
+
+# Add localhost IP specification for tunnel mounts
+if [ "$SERVER_IP" = "127.0.0.1" ] || [ "$SERVER_IP" = "localhost" ]; then
+    MOUNT_OPTS="$MOUNT_OPTS,ip=127.0.0.1"
+fi
+
+# Mount
+if [ -f "$CREDS_FILE" ]; then
+    # Use credentials file
+    mount -t cifs "//$SERVER_IP/$SHARE" "$MOUNT_POINT" -o "$MOUNT_OPTS"
+else
+    # Prompt for password
+    echo "Enter password for $USERNAME@$DOMAIN:"
+    read -s PASSWORD
+    mount -t cifs "//$SERVER_IP/$SHARE" "$MOUNT_POINT" \
+        -o "username=$USERNAME,password=$PASSWORD,domain=$DOMAIN,vers=1.0,uid=$REAL_UID,gid=$REAL_GID"
+fi
+
+# Check if mount succeeded
+if mountpoint -q "$MOUNT_POINT"; then
+    echo "Successfully mounted at $MOUNT_POINT"
+else
+    echo "Error: Mount failed"
+    exit 1
+fi
