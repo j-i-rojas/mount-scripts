@@ -1,0 +1,105 @@
+#!/bin/bash
+
+# Load configuration from .env
+ENV_FILE="$(dirname "$(realpath "$0")")/.env"
+if [ ! -f "$ENV_FILE" ]; then
+    echo "Error: .env file not found at $ENV_FILE"
+    echo "Copy .env.example to .env and fill in your mount configurations."
+    exit 1
+fi
+source "$ENV_FILE"
+
+# Build MOUNTS array from MOUNT_* variables defined in .env
+declare -A MOUNTS
+for var in $(compgen -v MOUNT_); do
+    MOUNTS["${var#MOUNT_}"]="${!var}"
+done
+
+usage() {
+    echo "Usage: $0 <mount_name>"
+    echo ""
+    echo "Available tunnel mounts:"
+    for name in "${!MOUNTS[@]}"; do
+        IFS='|' read -r ip share mount_point domain user port cf_tunnel <<< "${MOUNTS[$name]}"
+        if [ -n "$cf_tunnel" ]; then
+            echo "  $name -> $cf_tunnel on localhost:$port"
+        fi
+    done
+    exit 1
+}
+
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+MOUNT_NAME=$1
+
+if [ -z "${MOUNTS[$MOUNT_NAME]}" ]; then
+    echo "Error: Mount configuration '$MOUNT_NAME' not found"
+    usage
+fi
+
+IFS='|' read -r SERVER_IP SHARE MOUNT_POINT DOMAIN USERNAME PORT CF_TUNNEL <<< "${MOUNTS[$MOUNT_NAME]}"
+
+if [ -z "$CF_TUNNEL" ] || [ -z "$PORT" ]; then
+    echo "Error: '$MOUNT_NAME' is not a Cloudflare Tunnel mount (missing hostname or port)"
+    exit 1
+fi
+
+if ! command -v cloudflared &> /dev/null; then
+    echo "Error: cloudflared is not installed"
+    echo "Install with: wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && sudo dpkg -i cloudflared-linux-amd64.deb"
+    exit 1
+fi
+
+PID_FILE="/tmp/cf-tunnel-${MOUNT_NAME}.pid"
+LOG_FILE="/tmp/cf-tunnel-${MOUNT_NAME}.log"
+
+# Check if already running
+if [ -f "$PID_FILE" ]; then
+    PID=$(cat "$PID_FILE")
+    if kill -0 "$PID" 2>/dev/null; then
+        echo "Tunnel '$MOUNT_NAME' is already running (PID $PID)"
+        exit 0
+    fi
+    rm -f "$PID_FILE"
+fi
+
+# Phase 2 function: start the tunnel silently in the background.
+# cloudflared caches the auth token from the foreground session, so no re-auth is needed.
+start_background() {
+    echo ""
+    echo "Starting tunnel silently on localhost:$PORT..."
+    > "$LOG_FILE"
+    cloudflared access tcp --hostname "$CF_TUNNEL" --url "localhost:$PORT" > "$LOG_FILE" 2>&1 &
+    CF_PID=$!
+    echo "$CF_PID" > "$PID_FILE"
+    sleep 2
+    if ! kill -0 "$CF_PID" 2>/dev/null; then
+        echo "Error: cloudflared failed to start. Log:"
+        cat "$LOG_FILE"
+        rm -f "$PID_FILE"
+        exit 1
+    fi
+    echo "Tunnel is up on localhost:$PORT (PID $CF_PID)"
+}
+
+# Phase 1: run the tunnel in the foreground so the CF Access auth URL is visible.
+# The user authenticates in the browser, then presses Ctrl+C to signal done.
+echo "--------------------------------------------------------------"
+echo " Cloudflare tunnel: $CF_TUNNEL -> localhost:$PORT"
+echo ""
+echo " Authenticate in the browser using the URL shown below."
+echo " Press Ctrl+C when done to move the tunnel to the background."
+echo "--------------------------------------------------------------"
+echo ""
+
+# On Ctrl+C: cloudflared exits, then the trap fires to start the background tunnel.
+trap 'start_background; exit 0' INT
+
+# Phase 1: no --url so cloudflared shows the CF Access auth URL instead of starting a listener.
+cloudflared access tcp --hostname "$CF_TUNNEL"
+
+# If cloudflared exited on its own for any reason, start background anyway.
+trap - INT
+start_background

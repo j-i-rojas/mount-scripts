@@ -72,30 +72,13 @@ fi
 
 # Handle Cloudflare tunnel
 if [ -n "$CF_TUNNEL" ]; then
-    echo "Using Cloudflare Tunnel: $CF_TUNNEL"
-
-    # Check if cloudflared is installed
-    if ! command -v cloudflared &> /dev/null; then
-        echo "Error: cloudflared is not installed"
-        echo "Install with: wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && sudo dpkg -i cloudflared-linux-amd64.deb"
+    # Just verify the tunnel is already up — use start-cf-tunnel to start it
+    if ! (echo > /dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; then
+        echo "Error: Cloudflare tunnel is not running on localhost:$PORT"
+        echo "Start it first with: ./start-cf-tunnel $MOUNT_NAME"
         exit 1
     fi
-
-    # Check if tunnel is already running for this hostname
-    if ! pgrep -f "cloudflared access tcp.*${CF_TUNNEL}.*localhost:${PORT}" > /dev/null; then
-	# Test auth
-     	if ! timeout 3 cloudflared access tcp --hostname "$CF_TUNNEL" --url "localhost:$PORT" > /dev/null 2>&1; then
-            echo "Authentication required. Run this and complete auth in browser:"
-            echo "  cloudflared access tcp --hostname $CF_TUNNEL"
-            read -p "Press ENTER after authenticating... "
-     	fi
-        echo "Starting Cloudflare tunnel..."
-        cloudflared access tcp --hostname "$CF_TUNNEL" --url "localhost:${PORT}" > /dev/null 2>&1 &
-        sleep 2
-        echo "Tunnel started on localhost:${PORT}"
-    else
-        echo "Tunnel already running"
-    fi
+    echo "Cloudflare tunnel is up on localhost:$PORT"
 else
     # Check if server is reachable (skip for localhost)
     if [ "$SERVER_IP" != "127.0.0.1" ] && [ "$SERVER_IP" != "localhost" ]; then

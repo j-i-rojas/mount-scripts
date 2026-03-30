@@ -85,13 +85,45 @@ For mounts that go through a Cloudflare Tunnel, set the server IP to `127.0.0.1`
 MOUNT_myserverCf="127.0.0.1|C$|/mnt/myserver|MYDOMAIN|administrator|4450|smb.example.com"
 ```
 
-The script will:
-1. Check if `cloudflared` is installed.
-2. Start the tunnel automatically (`cloudflared access tcp --hostname smb.example.com --url localhost:4450`).
-3. Prompt for browser authentication if needed.
-4. Stop the tunnel on unmount (unless `--keep-tunnel` is passed or another mount is still using it).
+The tunnel must be started separately before mounting. Tunnel management is intentionally decoupled from mount/unmount so that authentication (which requires a browser) can be handled cleanly.
 
-Install `cloudflared` if needed:
+### Starting the tunnel
+
+```bash
+./start-cf-tunnel myserverCf
+```
+
+The script starts `cloudflared` in the background. If a CF Access login is required, it will print the URL:
+
+```
+--------------------------------------------------------------
+ Login required. Open this URL in your browser:
+
+  https://yourteam.cloudflareaccess.com/cdn-cgi/access/cli?...
+
+ Waiting for authentication (up to 2 minutes)...
+--------------------------------------------------------------
+```
+
+Once authenticated, the tunnel runs silently and the script exits. The PID is saved to `/tmp/cf-tunnel-<name>.pid`.
+
+### Mounting after the tunnel is up
+
+```bash
+sudo ./mount-network myserverCf
+```
+
+`mount-network` will error out with a clear message if the tunnel isn't running yet.
+
+### Stopping the tunnel
+
+```bash
+./stop-cf-tunnel myserverCf
+```
+
+This reads the saved PID and kills the `cloudflared` process. The tunnel is independent of the mount — unmounting does not stop it.
+
+### Install `cloudflared`
 
 ```bash
 wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
@@ -106,3 +138,5 @@ sudo dpkg -i cloudflared-linux-amd64.deb
 | `.env.example` | Template to copy from — safe to commit |
 | `mount-network` | Mounts a configured share |
 | `umount-network` | Unmounts a configured share |
+| `start-cf-tunnel` | Starts a Cloudflare tunnel, handles CF Access login |
+| `stop-cf-tunnel` | Stops a running Cloudflare tunnel |

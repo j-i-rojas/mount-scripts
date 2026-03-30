@@ -15,55 +15,69 @@ for var in $(compgen -v MOUNT_); do
     MOUNTS["${var#MOUNT_}"]="${!var}"
 done
 
-# Function to display usage
 usage() {
     echo "Usage: $0 <mount_name>"
     echo ""
-    echo "Available mounts:"
+    echo "Available tunnel mounts:"
     for name in "${!MOUNTS[@]}"; do
         IFS='|' read -r ip share mount_point domain user port cf_tunnel <<< "${MOUNTS[$name]}"
         if [ -n "$cf_tunnel" ]; then
-            echo "  $name -> $mount_point (via Cloudflare Tunnel)"
-        else
-            echo "  $name -> $mount_point"
+            echo "  $name -> $cf_tunnel on localhost:$port"
         fi
     done
     exit 1
 }
 
-# Check if mount name provided
 if [ $# -eq 0 ]; then
     usage
 fi
 
 MOUNT_NAME=$1
 
-# Check if mount configuration exists
 if [ -z "${MOUNTS[$MOUNT_NAME]}" ]; then
     echo "Error: Mount configuration '$MOUNT_NAME' not found"
     usage
 fi
 
-# Parse mount configuration
 IFS='|' read -r SERVER_IP SHARE MOUNT_POINT DOMAIN USERNAME PORT CF_TUNNEL <<< "${MOUNTS[$MOUNT_NAME]}"
 
-# Check if mounted
-if ! mountpoint -q "$MOUNT_POINT"; then
-    echo "$MOUNT_POINT is not mounted"
+if [ -z "$CF_TUNNEL" ] || [ -z "$PORT" ]; then
+    echo "Error: '$MOUNT_NAME' is not a Cloudflare Tunnel mount"
+    exit 1
+fi
+
+PID_FILE="/tmp/cf-tunnel-${MOUNT_NAME}.pid"
+
+if [ ! -f "$PID_FILE" ]; then
+    echo "Tunnel '$MOUNT_NAME' is not running (no PID file found)"
     exit 0
 fi
 
-echo "Unmounting: $MOUNT_POINT"
-umount -l "$MOUNT_POINT"
+PID=$(cat "$PID_FILE")
 
-# Verify unmount
-if ! mountpoint -q "$MOUNT_POINT"; then
-    echo "Successfully unmounted $MOUNT_POINT"
-    if [ -n "$CF_TUNNEL" ]; then
-        echo "Tunnel is still running. Stop it with: ./stop-cf-tunnel $MOUNT_NAME"
-    fi
-else
-    echo "Error: Failed to unmount $MOUNT_POINT"
-    echo "Try: sudo umount -l $MOUNT_POINT  (lazy unmount)"
-    exit 1
+if ! kill -0 "$PID" 2>/dev/null; then
+    echo "Tunnel '$MOUNT_NAME' is not running (process $PID is gone)"
+    rm -f "$PID_FILE"
+    exit 0
 fi
+
+echo "Stopping Cloudflare tunnel '$MOUNT_NAME' (PID $PID)..."
+kill "$PID"
+
+# Wait up to 5s for the process to exit
+ELAPSED=0
+while [ $ELAPSED -lt 5 ]; do
+    if ! kill -0 "$PID" 2>/dev/null; then
+        break
+    fi
+    sleep 1
+    ELAPSED=$((ELAPSED + 1))
+done
+
+if kill -0 "$PID" 2>/dev/null; then
+    echo "Process did not exit, sending SIGKILL..."
+    kill -9 "$PID" 2>/dev/null
+fi
+
+rm -f "$PID_FILE"
+echo "Tunnel '$MOUNT_NAME' stopped"
