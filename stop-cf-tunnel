@@ -15,14 +15,24 @@ for var in $(compgen -v MOUNT_); do
     MOUNTS["${var#MOUNT_}"]="${!var}"
 done
 
+# Build TUNNELS array from TUNNEL_* variables defined in .env (format: hostname|port)
+declare -A TUNNELS
+for var in $(compgen -v TUNNEL_); do
+    TUNNELS["${var#TUNNEL_}"]="${!var}"
+done
+
 usage() {
-    echo "Usage: $0 <mount_name>"
+    echo "Usage: $0 <tunnel_name>"
     echo ""
-    echo "Available tunnel mounts:"
+    echo "Available tunnels:"
+    for name in "${!TUNNELS[@]}"; do
+        IFS='|' read -r cf_tunnel port <<< "${TUNNELS[$name]}"
+        echo "  $name -> $cf_tunnel on localhost:$port"
+    done
     for name in "${!MOUNTS[@]}"; do
         IFS='|' read -r ip share mount_point domain user port cf_tunnel <<< "${MOUNTS[$name]}"
         if [ -n "$cf_tunnel" ]; then
-            echo "  $name -> $cf_tunnel on localhost:$port"
+            echo "  $name -> $cf_tunnel on localhost:$port  (mount)"
         fi
     done
     exit 1
@@ -34,15 +44,18 @@ fi
 
 MOUNT_NAME=$1
 
-if [ -z "${MOUNTS[$MOUNT_NAME]}" ]; then
-    echo "Error: Mount configuration '$MOUNT_NAME' not found"
+# Resolve tunnel config: check TUNNELS first, then MOUNTS
+if [ -n "${TUNNELS[$MOUNT_NAME]}" ]; then
+    IFS='|' read -r CF_TUNNEL PORT <<< "${TUNNELS[$MOUNT_NAME]}"
+elif [ -n "${MOUNTS[$MOUNT_NAME]}" ]; then
+    IFS='|' read -r SERVER_IP SHARE MOUNT_POINT DOMAIN USERNAME PORT CF_TUNNEL <<< "${MOUNTS[$MOUNT_NAME]}"
+else
+    echo "Error: Tunnel configuration '$MOUNT_NAME' not found"
     usage
 fi
 
-IFS='|' read -r SERVER_IP SHARE MOUNT_POINT DOMAIN USERNAME PORT CF_TUNNEL <<< "${MOUNTS[$MOUNT_NAME]}"
-
 if [ -z "$CF_TUNNEL" ] || [ -z "$PORT" ]; then
-    echo "Error: '$MOUNT_NAME' is not a Cloudflare Tunnel mount"
+    echo "Error: '$MOUNT_NAME' is not a Cloudflare Tunnel entry"
     exit 1
 fi
 

@@ -21,13 +21,19 @@ Copy the example config and fill in your values:
 cp .env.example .env
 ```
 
-Edit `.env` with your mount definitions:
+Edit `.env` with your mount and tunnel definitions:
 
 ```bash
 # Format: MOUNT_name="server_ip|share|mount_point|domain|username[|port][|cf_tunnel_hostname]"
 
 MOUNT_myserver="192.168.1.10|C$|/mnt/myserver|MYDOMAIN|administrator"
 MOUNT_nas="192.168.1.20|shared|/mnt/nas|WORKGROUP|user"
+
+# Standalone Cloudflare tunnels (not tied to mounts)
+# Format: TUNNEL_name="cf_tunnel_hostname|local_port"
+
+TUNNEL_mydb="db.example.com|5432"
+TUNNEL_redis="redis.example.com|6379"
 
 # Credentials file path
 CREDS_FILE="/home/youruser/.smb_credentials"
@@ -77,7 +83,28 @@ sudo ./umount-network <name> --keep-tunnel
 
 Running either script with no arguments lists all configured mounts.
 
-## Cloudflare Tunnel mounts
+## Cloudflare Tunnels
+
+Tunnels can be defined in two ways:
+
+### Standalone tunnels (DB, Redis, or any TCP service)
+
+Add a `TUNNEL_*` entry — no mount fields needed:
+
+```bash
+TUNNEL_mydb="db.example.com|5432"
+```
+
+Start/stop it directly:
+
+```bash
+./start-cf-tunnel mydb
+./stop-cf-tunnel mydb
+```
+
+This forwards `localhost:5432` through the Cloudflare tunnel to the remote service.
+
+### Tunnel-backed mounts (SMB over Cloudflare)
 
 For mounts that go through a Cloudflare Tunnel, set the server IP to `127.0.0.1` and add the port and tunnel hostname as the last two fields:
 
