@@ -23,6 +23,7 @@ done
 
 usage() {
     echo "Usage: $0 <tunnel_name>"
+    echo "       $0 --all"
     echo ""
     echo "Available tunnels:"
     for name in "${!TUNNELS[@]}"; do
@@ -38,8 +39,62 @@ usage() {
     exit 1
 }
 
+stop_tunnel() {
+    local name=$1
+    local pid_file="/tmp/cf-tunnel-${name}.pid"
+
+    if [ ! -f "$pid_file" ]; then
+        echo "Tunnel '$name' is not running (no PID file found)"
+        return 0
+    fi
+
+    local pid
+    pid=$(cat "$pid_file")
+
+    if ! kill -0 "$pid" 2>/dev/null; then
+        echo "Tunnel '$name' is not running (process $pid is gone)"
+        rm -f "$pid_file"
+        return 0
+    fi
+
+    echo "Stopping Cloudflare tunnel '$name' (PID $pid)..."
+    kill "$pid"
+
+    local elapsed=0
+    while [ $elapsed -lt 5 ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "Process did not exit, sending SIGKILL..."
+        kill -9 "$pid" 2>/dev/null
+    fi
+
+    rm -f "$pid_file"
+    echo "Tunnel '$name' stopped"
+}
+
 if [ $# -eq 0 ]; then
     usage
+fi
+
+if [ "$1" = "--all" ] || [ "$1" = "-all" ]; then
+    shopt -s nullglob
+    pid_files=(/tmp/cf-tunnel-*.pid)
+    if [ ${#pid_files[@]} -eq 0 ]; then
+        echo "No running tunnels found"
+        exit 0
+    fi
+    for pid_file in "${pid_files[@]}"; do
+        name="${pid_file#/tmp/cf-tunnel-}"
+        name="${name%.pid}"
+        stop_tunnel "$name"
+    done
+    exit 0
 fi
 
 MOUNT_NAME=$1
@@ -59,38 +114,4 @@ if [ -z "$CF_TUNNEL" ] || [ -z "$PORT" ]; then
     exit 1
 fi
 
-PID_FILE="/tmp/cf-tunnel-${MOUNT_NAME}.pid"
-
-if [ ! -f "$PID_FILE" ]; then
-    echo "Tunnel '$MOUNT_NAME' is not running (no PID file found)"
-    exit 0
-fi
-
-PID=$(cat "$PID_FILE")
-
-if ! kill -0 "$PID" 2>/dev/null; then
-    echo "Tunnel '$MOUNT_NAME' is not running (process $PID is gone)"
-    rm -f "$PID_FILE"
-    exit 0
-fi
-
-echo "Stopping Cloudflare tunnel '$MOUNT_NAME' (PID $PID)..."
-kill "$PID"
-
-# Wait up to 5s for the process to exit
-ELAPSED=0
-while [ $ELAPSED -lt 5 ]; do
-    if ! kill -0 "$PID" 2>/dev/null; then
-        break
-    fi
-    sleep 1
-    ELAPSED=$((ELAPSED + 1))
-done
-
-if kill -0 "$PID" 2>/dev/null; then
-    echo "Process did not exit, sending SIGKILL..."
-    kill -9 "$PID" 2>/dev/null
-fi
-
-rm -f "$PID_FILE"
-echo "Tunnel '$MOUNT_NAME' stopped"
+stop_tunnel "$MOUNT_NAME"
