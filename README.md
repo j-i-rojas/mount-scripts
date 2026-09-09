@@ -157,6 +157,31 @@ wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudfla
 sudo dpkg -i cloudflared-linux-amd64.deb
 ```
 
+## RDP
+
+Add an `RDP_*` entry to connect to a server's desktop with `xfreerdp`:
+
+```bash
+# Format: RDP_name="server[|domain|user|password]"
+
+RDP_myserver="192.168.1.10"
+RDP_myserver2="192.168.1.11|MYDOMAIN|administrator|secretpass"
+```
+
+Only `server` is required. Any of `domain`, `user`, or `password` left out is
+filled in from `CREDS_FILE` (if set), then prompted for interactively if still
+missing.
+
+```bash
+./connect-rdp myserver
+```
+
+Extra `xfreerdp` flags can be passed straight through:
+
+```bash
+./connect-rdp myserver -- /f
+```
+
 ## File reference
 
 | File | Description |
@@ -167,3 +192,4 @@ sudo dpkg -i cloudflared-linux-amd64.deb
 | `umount-network` | Unmounts a configured share |
 | `start-cf-tunnel` | Starts a Cloudflare tunnel, handles CF Access login |
 | `stop-cf-tunnel` | Stops a running Cloudflare tunnel |
+| `connect-rdp` | Connects to a server via RDP using `xfreerdp` |
