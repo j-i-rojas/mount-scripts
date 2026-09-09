@@ -69,11 +69,13 @@ fi
 
 echo "Connecting to $SERVER as $USER${DOMAIN:+@$DOMAIN}..."
 
-# Build xfreerdp arguments
-XFREERDP_ARGS=(/v:"$SERVER" /u:"$USER" /p:"$PASSWORD")
+# Build xfreerdp arguments. Password is fed via stdin (/from-stdin) rather
+# than /p: so it doesn't appear in the process list (ps/proc) for other
+# local users to see.
+XFREERDP_ARGS=(/v:"$SERVER" /u:"$USER" /from-stdin:force)
 if [ -n "$DOMAIN" ]; then
     XFREERDP_ARGS+=(/d:"$DOMAIN")
 fi
-XFREERDP_ARGS+=(/cert:ignore /dynamic-resolution +clipboard)
+XFREERDP_ARGS+=(/cert:tofu /dynamic-resolution +clipboard)
 
-xfreerdp "${XFREERDP_ARGS[@]}" "$@"
+printf '%s\n' "$PASSWORD" | xfreerdp "${XFREERDP_ARGS[@]}" "$@"
