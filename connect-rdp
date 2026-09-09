@@ -1,0 +1,81 @@
+#!/bin/bash
+
+# Load configuration from .env
+ENV_FILE="$(dirname "$(realpath "$0")")/.env"
+if [ ! -f "$ENV_FILE" ]; then
+    echo "Error: .env file not found at $ENV_FILE"
+    echo "Copy .env.example to .env and fill in your RDP configurations."
+    exit 1
+fi
+source "$ENV_FILE"
+
+# Build RDPS array from RDP_* variables defined in .env
+declare -A RDPS
+for var in $(compgen -v RDP_); do
+    RDPS["${var#RDP_}"]="${!var}"
+done
+
+# Function to display usage
+usage() {
+    echo "Usage: $0 <rdp_name> [-- <extra xfreerdp args>]"
+    echo ""
+    echo "Available RDP targets:"
+    for name in "${!RDPS[@]}"; do
+        IFS='|' read -r server domain user password <<< "${RDPS[$name]}"
+        echo "  $name -> $server"
+    done
+    exit 1
+}
+
+# Check if rdp name provided
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+RDP_NAME=$1
+shift
+
+# Check if rdp configuration exists
+if [ -z "${RDPS[$RDP_NAME]}" ]; then
+    echo "Error: RDP configuration '$RDP_NAME' not found"
+    usage
+fi
+
+# Parse rdp configuration: server|domain|user|password (only server is required)
+IFS='|' read -r SERVER DOMAIN USER PASSWORD <<< "${RDPS[$RDP_NAME]}"
+
+# Fall back to CREDS_FILE for any field not set in the RDP_* entry
+if [ -n "$CREDS_FILE" ] && [ -f "$CREDS_FILE" ] && { [ -z "$DOMAIN" ] || [ -z "$USER" ] || [ -z "$PASSWORD" ]; }; then
+    FILE_USER=$(grep -m1 '^username=' "$CREDS_FILE" | cut -d= -f2-)
+    FILE_PASSWORD=$(grep -m1 '^password=' "$CREDS_FILE" | cut -d= -f2-)
+    FILE_DOMAIN=$(grep -m1 '^domain=' "$CREDS_FILE" | cut -d= -f2-)
+
+    [ -z "$USER" ] && USER="$FILE_USER"
+    [ -z "$PASSWORD" ] && PASSWORD="$FILE_PASSWORD"
+    [ -z "$DOMAIN" ] && DOMAIN="$FILE_DOMAIN"
+fi
+
+# Prompt for anything still missing
+if [ -z "$USER" ]; then
+    read -r -p "Username: " USER
+fi
+if [ -z "$DOMAIN" ]; then
+    read -r -p "Domain (leave blank for none): " DOMAIN
+fi
+if [ -z "$PASSWORD" ]; then
+    echo "Enter password for $USER@$SERVER:"
+    read -r -s PASSWORD
+fi
+
+echo "Connecting to $SERVER as $USER${DOMAIN:+@$DOMAIN}..."
+
+# Build xfreerdp arguments. Password is fed via stdin (/from-stdin) rather
+# than /p: so it doesn't appear in the process list (ps/proc) for other
+# local users to see.
+XFREERDP_ARGS=(/v:"$SERVER" /u:"$USER" /from-stdin:force)
+if [ -n "$DOMAIN" ]; then
+    XFREERDP_ARGS+=(/d:"$DOMAIN")
+fi
+XFREERDP_ARGS+=(/cert:tofu /dynamic-resolution +clipboard)
+
+printf '%s\n' "$PASSWORD" | xfreerdp "${XFREERDP_ARGS[@]}" "$@"
